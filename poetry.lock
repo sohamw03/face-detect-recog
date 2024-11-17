@@ -26,6 +26,38 @@ files = [
 ]
 
 [[package]]
+name = "cv2-enumerate-cameras"
+version = "1.1.17"
+description = "Enumerate / List / Find / Detect / Search index for opencv VideoCapture."
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "cv2_enumerate_cameras-1.1.17-cp310-cp310-win32.whl", hash = "sha256:87019ac946f6403df88a780b3ca788f41554b3e55b58b6d83f9dfcac0de78f11"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp310-cp310-win_amd64.whl", hash = "sha256:11ecefdf3a86f0b3cc9b5bc3d84b7075a30b19560692ec51c3576ed213cdcb1c"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp311-cp311-win32.whl", hash = "sha256:ff2b8cf3d0c338a2aadc868893acd71b975a39ab5871ea9cc5ac222beba16573"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp311-cp311-win_amd64.whl", hash = "sha256:00cd2c3f96f51a13a52cfee3b2cbe30ef0b26854c6f3cafdc02c18345f8546de"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp312-cp312-win32.whl", hash = "sha256:47421f06adf2c70c83e90da47b8ea2f2fc4807093f14c95e74671b7521489c0a"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp312-cp312-win_amd64.whl", hash = "sha256:f3daff70995b67f28f1b211a5dcc281f0687d74f3088db09fdefb3ec30c8cfe6"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp36-cp36m-win32.whl", hash = "sha256:c3bc505458f1032c46a04b3cb62fdf3d638c89c0f0d4461f5052a06591811019"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp36-cp36m-win_amd64.whl", hash = "sha256:da603b717e682248e74b80ea2e2e7fdd408fd1f15dd3f8e0f2c5639394009dfa"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp37-cp37m-win32.whl", hash = "sha256:f26be44e3f48025c56768cfa82d5fb3d7163107f4be6e148a3738b9404ffeabe"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp37-cp37m-win_amd64.whl", hash = "sha256:61d6441a0910e558803965880243eabbc41b4e97bb1c14aca94c97e03e7d2559"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp38-cp38-win32.whl", hash = "sha256:c5dfd378ba20b710f24f6a5a11e9df68abe46cdb1320563530f1ed1b275801b0"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp38-cp38-win_amd64.whl", hash = "sha256:593f838b44e5b85575f15010a6eb0a4994e50ebeea8415ca764da1e31a9a1867"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp39-cp39-win32.whl", hash = "sha256:8d4b311edcc593f36f066432454592b1fad94188064d317d4226bda9dc6be330"},
+    {file = "cv2_enumerate_cameras-1.1.17-cp39-cp39-win_amd64.whl", hash = "sha256:c9846db2385263cfc826acf9b80ca23083add56609210db6a356223a1dbd95af"},
+    {file = "cv2_enumerate_cameras-1.1.17-pp310-pypy310_pp73-win_amd64.whl", hash = "sha256:6d318e819809212d0428ec1507240fca74cbde456e133937f5bf151165631e1a"},
+    {file = "cv2_enumerate_cameras-1.1.17-pp37-pypy37_pp73-win_amd64.whl", hash = "sha256:94580ec044147045250be84655dd084268f8ffb1f74bbe1e9f4073e653715589"},
+    {file = "cv2_enumerate_cameras-1.1.17-pp38-pypy38_pp73-win_amd64.whl", hash = "sha256:a43575d38e125163942ec871ab8b4864880563462b4e9c7b4cceae8296c09e57"},
+    {file = "cv2_enumerate_cameras-1.1.17-pp39-pypy39_pp73-win_amd64.whl", hash = "sha256:14f88b6f5abf451dc329e2eb8fdd23284c39fa6ed6f085bb054fca6d6f64d91d"},
+    {file = "cv2_enumerate_cameras-1.1.17-py3-none-any.whl", hash = "sha256:6c032b5b3fd138a60ec486717566d916636e3d8bfe6377d2ab6f3f8a76fd9c38"},
+    {file = "cv2_enumerate_cameras-1.1.17.tar.gz", hash = "sha256:e1960e6fc6fdf85cb4019d066422dbfe7fb16c977e71d5b700d9588999ab6a19"},
+]
+
+[package.extras]
+linuxpy = ["linuxpy"]
+
+[[package]]
 name = "dlib"
 version = "19.24.1"
 description = "A toolkit for making real world machine learning and data analysis applications"
@@ -229,4 +261,4 @@ xmp = ["defusedxml"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.11"
-content-hash = "04205707f283991528a6ba46d38e6125cb0e9b3daefb760a9c6fcc8aaa5c3cac"
+content-hash = "fad5658ca87c6832567cfd2aacdb8c74c29cbec1e150173186687a7ad3e75994"

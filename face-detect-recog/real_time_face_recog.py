@@ -1,7 +1,42 @@
 import cv2
 import face_recognition
 import numpy as np
+import time
+from cv2_enumerate_cameras import enumerate_cameras
 
+def get_face_angle(face_landmarks):
+    # Calculate angle using eye positions instead of nose-chin
+    left_eye = np.mean(face_landmarks['left_eye'], axis=0)
+    right_eye = np.mean(face_landmarks['right_eye'], axis=0)
+    eye_angle = np.degrees(np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0]))
+    return eye_angle
+
+class AngleBuffer:
+    def __init__(self, size=10):
+        self.size = size
+        self.angles = []
+
+    def add(self, angle):
+        self.angles.append(angle)
+        if len(self.angles) > self.size:
+            self.angles.pop(0)
+
+    def get_average(self):
+        if not self.angles:
+            return 0
+        return sum(self.angles) / len(self.angles)
+
+def get_alignment_instruction(angle):
+    if abs(angle) < 3:  # Wider threshold
+        return "Face aligned properly", True
+    elif angle < -3:
+        return "Turn face right slowly", False
+    else:
+        return "Turn face left slowly", False
+
+
+for camera_info in enumerate_cameras():
+    print(f'{camera_info.index}: {camera_info.name}')
 capture = cv2.VideoCapture(0)
 capture.set(3, 1280)  # Width of the frames in the video stream.
 capture.set(4, 720)  # Height of the frames in the video stream.
@@ -21,65 +56,150 @@ known_face_names = ["Soham", "Narendra Modi", "Donald Trump"]
 
 process_this_frame = True
 
+# Add UI window
+cv2.namedWindow('Face Verification System')
+font = cv2.FONT_HERSHEY_DUPLEX
+
+# State constants
+STATE_ALIGNING = 0
+STATE_COUNTDOWN = 1
+STATE_CAPTURED = 2
+
+class FaceVerificationState:
+    def __init__(self):
+        self.current_state = STATE_ALIGNING
+        self.angle_buffer = AngleBuffer(10)
+        self.stable_frames = 0
+        self.state_start_time = 0
+        self.captured_frame = None
+        self.captured_result = ""
+        self.captured_face_loc = None
+        self.captured_box_color = None
+
+    def reset(self):
+        self.__init__()
+
+# Initialize state
+state = FaceVerificationState()
+
+# Constants
+REQUIRED_STABLE_FRAMES = 15
+ALIGNMENT_DELAY = 1
+COUNTDOWN_DURATION = 3
+
 #loop through every frome in the image
 while True:
     # Grab a single frame of video
     ret, frame = capture.read()
-    # Only process every other frame of video to save time
-    if process_this_frame:
-        # Resize frame of video to 1/4 size for faster face recognition processing
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+    current_time = time.time()
 
-        # Convert the image from BGR color (which OpenCV uses) to RGB color (which face_recognition uses)
-        # rgb_small_frame = small_frame[:, :, ::-1]
+    # Show frozen frame if in CAPTURED state
+    if state.current_state == STATE_CAPTURED and state.captured_frame is not None:
+        frame = state.captured_frame.copy()
+        cv2.putText(frame, state.captured_result, (10, 70), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
+        if state.captured_face_loc:
+            top, right, bottom, left = state.captured_face_loc
+            cv2.rectangle(frame, (left, top), (right, bottom), state.captured_box_color, 2)
+        cv2.imshow('Face Verification System', frame)
 
-        # Find all the faces and face encodings in the current frame of video
-        face_locations = face_recognition.face_locations(small_frame, model='hog', number_of_times_to_upsample=1)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('r'):
+            state.reset()
+        continue
+
+    # Process face detection every frame
+    small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+    face_locations = face_recognition.face_locations(small_frame)
+
+    # Initialize display variables
+    alignment_msg = "No face detected"
+    result_msg = state.captured_result
+    box_color = (0, 0, 255)  # Default red
+
+    if face_locations:
+        face_landmarks_list = face_recognition.face_landmarks(small_frame)
         face_encodings = face_recognition.face_encodings(small_frame, face_locations)
 
-        face_names = []
-        for face_encoding in face_encodings:
-            # See if the face is a match for the known face(s)
-            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-            name = "Unknown"
+        if face_encodings:
+            angle = get_face_angle(face_landmarks_list[0])
+            state.angle_buffer.add(angle)
+            smoothed_angle = state.angle_buffer.get_average()
+            alignment_msg, is_aligned = get_alignment_instruction(smoothed_angle)
 
-            # # If a match was found in known_face_encodings, just use the first one.
-            # if True in matches:
-            #     first_match_index = matches.index(True)
-            #     name = known_face_names[first_match_index]
+            if state.current_state == STATE_ALIGNING:
+                if is_aligned:
+                    state.stable_frames += 1
+                    progress = min(state.stable_frames / REQUIRED_STABLE_FRAMES * 100, 100)
+                    alignment_msg += f" ({progress:.0f}%)"
 
-            # Or instead, use the known face with the smallest distance to the new face
-            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-            best_match_index = np.argmin(face_distances)
-            if matches[best_match_index]:
-                name = known_face_names[best_match_index]
+                    if state.stable_frames >= REQUIRED_STABLE_FRAMES:
+                        if state.state_start_time == 0:
+                            state.state_start_time = current_time
+                        elif current_time - state.state_start_time >= ALIGNMENT_DELAY:
+                            state.current_state = STATE_COUNTDOWN
+                            state.state_start_time = current_time
+                else:
+                    state.stable_frames = 0
+                    state.state_start_time = 0
 
-            face_names.append(name)
+                box_color = (0, 255, 0) if is_aligned else (0, 0, 255)
 
-    process_this_frame = not process_this_frame
+            elif state.current_state == STATE_COUNTDOWN:
+                if not is_aligned:
+                    state.reset()
+                    alignment_msg = "Please keep face aligned"
+                else:
+                    remaining = COUNTDOWN_DURATION - int(current_time - state.state_start_time)
+                    if remaining > 0:
+                        alignment_msg = f"Keep still: {remaining}..."
+                        box_color = (0, 255, 255)
+                    else:
+                        state.current_state = STATE_CAPTURED
 
-    # Display the results
-    for (top, right, bottom, left), name in zip(face_locations, face_names):
-        # Scale back up face locations since the frame we detected in was scaled to 1/4 size
-        top *= 4
-        right *= 4
-        bottom *= 4
-        left *= 4
+            elif state.current_state == STATE_CAPTURED:
+                if not is_aligned:
+                    state.reset()
+                    alignment_msg = "Face misaligned, please try again"
+                else:
+                    # Process face recognition
+                    face_distances = face_recognition.face_distance(known_face_encodings, face_encodings[0])
+                    best_match_index = np.argmin(face_distances)
+                    match_percentage = (1 - face_distances[best_match_index]) * 100
 
-        # Draw a box around the face
-        cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
+                    if match_percentage >= 50:
+                        name = known_face_names[best_match_index]
+                        result_msg = f"Match found: {name} ({match_percentage:.1f}%)"
+                    else:
+                        result_msg = f"No match found ({match_percentage:.1f}%)"
 
-        # Draw a label with a name below the face
-        cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 0, 255), cv2.FILLED)
-        font = cv2.FONT_HERSHEY_DUPLEX
-        cv2.putText(frame, name, (left + 6, bottom - 6), font, 1.0, (255, 255, 255), 1)
+                    state.captured_frame = frame.copy()
+                    state.captured_result = result_msg
+                    state.captured_face_loc = (top * 4, right * 4, bottom * 4, left * 4)
+                    state.captured_box_color = (255, 0, 0)
 
-    # Display the resulting image
-    cv2.imshow('Video', frame)
+    # Only draw UI elements if not in CAPTURED state
+    if state.current_state != STATE_CAPTURED:
+        cv2.putText(frame, alignment_msg, (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
+        if result_msg:
+            cv2.putText(frame, result_msg, (10, 70), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
 
-    # Hit 'q' on the keyboard to quit!
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+        # Draw face boxes
+        for (top, right, bottom, left) in face_locations:
+            top *= 4
+            right *= 4
+            bottom *= 4
+            left *= 4
+            cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
+
+        cv2.imshow('Face Verification System', frame)
+
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
         break
+    elif key == ord('r'):
+        state.reset()
 
 capture.release()
 cv2.destroyAllWindows()
