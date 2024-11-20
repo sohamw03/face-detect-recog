@@ -10,8 +10,9 @@ import numpy as np
 import pandas as pd
 import tqdm
 import tensorflow as tf
+
 # Configure TensorFlow for GPU
-gpus = tf.config.experimental.list_physical_devices('GPU')
+gpus = tf.config.experimental.list_physical_devices("GPU")
 if gpus:
     try:
         for gpu in gpus:
@@ -33,19 +34,24 @@ STATE_ALIGNING = 0
 STATE_COUNTDOWN = 1
 STATE_CAPTURED = 2
 
-# Initialize models with GPU support
-detector = MTCNN(
-    stages="face_and_landmarks_detection",  # Use valid stage
-    device="gpu:0"  # Specify GPU device
-)
-facenet = FaceNet()
-# Warm up GPU with a dummy inference
-dummy_image = np.zeros((160, 160, 3), dtype=np.uint8)
-facenet.embeddings([dummy_image])
+
+def init_models():
+    global detector, facenet
+    # Initialize models with GPU support
+    detector = MTCNN(
+        stages="face_and_landmarks_detection",  # Use valid stage
+        device="gpu:0",  # Specify GPU device
+    )
+    facenet = FaceNet()
+    # Warm up GPU with a dummy inference
+    dummy_image = np.zeros((160, 160, 3), dtype=np.uint8)
+    facenet.embeddings([dummy_image])
+
 
 def process_face(args):
     """Helper function to process a single face using FaceNet"""
     image_path, name = args
+    global detector, facenet
     try:
         image = cv2.imread(image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -53,8 +59,8 @@ def process_face(args):
         # Detect face using MTCNN
         faces = detector.detect_faces(image)
         if faces:
-            x, y, w, h = faces[0]['box']
-            face = image[y:y+h, x:x+w]
+            x, y, w, h = faces[0]["box"]
+            face = image[y : y + h, x : x + w]
             face = cv2.resize(face, (160, 160))
 
             # Get face embedding
@@ -64,9 +70,11 @@ def process_face(args):
         print(f"Error processing {image_path}: {e}")
     return None
 
+
 def load_dataset():
     """Load face dataset and compute FaceNet embeddings"""
     cache_file = "facenet_embeddings_cache.pkl"
+    global detector
 
     # Try to load from cache first
     if os.path.exists(cache_file):
@@ -93,7 +101,7 @@ def load_dataset():
     faces_dir = "archive/Faces/Faces"
     for _, row in df.iterrows():
         name = row["label"].split("_")[0]
-        if processed_names.get(name, 0) >= 10:
+        if processed_names.get(name, 0) >= 1:
             continue
 
         image_path = os.path.join(faces_dir, row["id"])
@@ -101,7 +109,9 @@ def load_dataset():
         processed_names[name] = processed_names.get(name, 0) + 1
 
     # Process faces in parallel
-    with ProcessPoolExecutor(max_workers=int(os.cpu_count() * 2)) as executor:
+    with ProcessPoolExecutor(
+        max_workers=int(os.cpu_count() * 2), initializer=init_models
+    ) as executor:
         results = list(
             tqdm.tqdm(
                 executor.map(process_face, tasks),
@@ -128,15 +138,36 @@ def load_dataset():
 
     return known_face_encodings, known_face_names
 
+
 def get_face_angle(face):
-    """Calculate face angle using MTCNN landmarks"""
-    landmarks = face['keypoints']
-    left_eye = landmarks['left_eye']
-    right_eye = landmarks['right_eye']
-    eye_angle = np.degrees(
-        np.arctan2(right_eye[1] - left_eye[1], right_eye[0] - left_eye[0])
+    """Calculate lateral face angle (yaw) using MTCNN landmarks
+    Returns angle in degrees where:
+    0 degrees = facing camera directly
+    Positive = face turned to their left (our right)
+    Negative = face turned to their right (our left)
+    """
+    landmarks = face["keypoints"]
+    nose = landmarks["nose"]
+    left_eye = landmarks["left_eye"]
+    right_eye = landmarks["right_eye"]
+
+    # Calculate eye midpoint
+    eye_midpoint = ((left_eye[0] + right_eye[0]) / 2, (left_eye[1] + right_eye[1]) / 2)
+
+    # Calculate distance between eyes
+    eye_distance = np.sqrt(
+        (right_eye[0] - left_eye[0]) ** 2 + (right_eye[1] - left_eye[1]) ** 2
     )
-    return eye_angle
+
+    # Calculate horizontal distance from nose to eye midpoint
+    nose_offset = nose[0] - eye_midpoint[0]
+
+    # Convert to angle using arctangent
+    # Multiply by 2 to amplify the angle for better sensitivity
+    angle = np.degrees(2 * np.arctan2(nose_offset, eye_distance))
+
+    return angle
+
 
 class AngleBuffer:
     def __init__(self, size=10):
@@ -153,13 +184,15 @@ class AngleBuffer:
             return 0
         return sum(self.angles) / len(self.angles)
 
+
 def get_alignment_instruction(angle):
-    if abs(angle) < 3:  # Wider threshold
+    if abs(angle) < 8:  # Wider threshold
         return "Face aligned properly", True
-    elif angle < -3:
-        return "Turn face right slowly", False
-    else:
+    elif angle < -8:
         return "Turn face left slowly", False
+    else:
+        return "Turn face right slowly", False
+
 
 class FaceVerificationState:
     def __init__(self):
@@ -175,7 +208,10 @@ class FaceVerificationState:
     def reset(self):
         self.__init__()
 
+
 def main():
+    init_models()
+    global detector
     for camera_info in enumerate_cameras():
         print(f"{camera_info.index}: {camera_info.name}")
     capture = cv2.VideoCapture(0)
@@ -197,9 +233,10 @@ def main():
     state = FaceVerificationState()
 
     # Constants
-    REQUIRED_STABLE_FRAMES = 15
+    REQUIRED_STABLE_FRAMES = 10
     ALIGNMENT_DELAY = 1
-    COUNTDOWN_DURATION = 3
+    COUNTDOWN_DURATION = 2.25
+    COUNTDOWN_INTERVAL = 0.75
 
     # loop through every frome in the image
     while True:
@@ -251,25 +288,27 @@ def main():
             if state.current_state == STATE_CAPTURED:
                 if is_aligned:
                     # Get face embedding using FaceNet
-                    x, y, w, h = face['box']
-                    face_img = rgb_frame[y:y+h, x:x+w]
+                    x, y, w, h = face["box"]
+                    face_img = rgb_frame[y : y + h, x : x + w]
                     face_img = cv2.resize(face_img, (160, 160))
                     face_embedding = facenet.embeddings([face_img])[0]
 
                     # Calculate similarities with known faces
-                    face_distances = np.linalg.norm(known_face_encodings - face_embedding, axis=1)
+                    face_distances = np.linalg.norm(
+                        known_face_encodings - face_embedding, axis=1
+                    )
                     best_match_index = np.argmin(face_distances)
                     match_percentage = (1 - face_distances[best_match_index]) * 100
 
-                    if match_percentage >= 50:  # Adjusted threshold for FaceNet
+                    if match_percentage >= 0:  # Adjusted threshold for FaceNet
                         name = known_face_names[best_match_index]
-                        result_msg = f"Match found: {name} ({match_percentage:.1f}%)"
+                        result_msg = f"Match found: {name} ({match_percentage:.2f}%)"
                     else:
-                        result_msg = f"No match found ({match_percentage:.1f}%)"
+                        result_msg = f"No match found ({match_percentage:.2f}%)"
 
                     state.captured_frame = frame.copy()
                     state.captured_result = result_msg
-                    state.captured_face_loc = (y, x+w, y+h, x)
+                    state.captured_face_loc = (y, x + w, y + h, x)
                     state.captured_box_color = (255, 0, 0)
 
             # Rest of the state handling logic remains the same
@@ -284,9 +323,7 @@ def main():
                     if state.stable_frames >= REQUIRED_STABLE_FRAMES:
                         if state.state_start_time == 0:
                             state.state_start_time = current_time
-                        elif (
-                            current_time - state.state_start_time >= ALIGNMENT_DELAY
-                        ):
+                        elif current_time - state.state_start_time >= ALIGNMENT_DELAY:
                             state.current_state = STATE_COUNTDOWN
                             state.state_start_time = current_time
                 else:
@@ -300,18 +337,21 @@ def main():
                     state.reset()
                     alignment_msg = "Please keep face aligned"
                 else:
-                    remaining = COUNTDOWN_DURATION - int(
+                    remaining_duration = COUNTDOWN_DURATION - (
                         current_time - state.state_start_time
                     )
-                    if remaining > 0:
-                        alignment_msg = f"Keep still: {remaining}..."
+                    remaining_count = min(
+                        3, int(remaining_duration / COUNTDOWN_INTERVAL) + 1
+                    )
+                    if remaining_count > 0:
+                        alignment_msg = f"Keep still: {remaining_count}..."
                         box_color = (0, 255, 255)
                     else:
                         state.current_state = STATE_CAPTURED
 
             # Draw face boxes using MTCNN coordinates
-            x, y, w, h = face['box']
-            cv2.rectangle(frame, (x, y), (x+w, y+h), box_color, 2)
+            x, y, w, h = face["box"]
+            cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
 
         # Only draw UI elements if not in CAPTURED state
         if state.current_state != STATE_CAPTURED:
@@ -345,6 +385,7 @@ def main():
 
     capture.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
