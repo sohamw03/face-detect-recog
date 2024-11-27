@@ -58,7 +58,7 @@ def load_dataset():
     faces_dir = "archive/Faces/Faces"
     for _, row in df.iterrows():
         name = row["label"].split("_")[0]
-        if processed_names.get(name, 0) >= 1:
+        if processed_names.get(name, 0) >= 5:
             continue
 
         image_path = os.path.join(faces_dir, row["id"])
@@ -143,9 +143,9 @@ def get_alignment_instruction(angle):
     if abs(angle) < 8:  # Wider threshold
         return "Face aligned properly", True
     elif angle < -8:
-        return "Turn face left slowly", False
-    else:
         return "Turn face right slowly", False
+    else:
+        return "Turn face left slowly", False
 
 
 class FaceVerificationState:
@@ -195,6 +195,7 @@ def main():
         # Grab a single frame of video
         ret, frame = capture.read()
         current_time = time.time()
+        frame = cv2.flip(frame, 1)
 
         # Show frozen frame if in CAPTURED state
         if state.current_state == STATE_CAPTURED and state.captured_frame is not None:
