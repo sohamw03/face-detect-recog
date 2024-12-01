@@ -1,3 +1,4 @@
 .venv/
 face-detect-recog/archive/
 .env
+.vscode

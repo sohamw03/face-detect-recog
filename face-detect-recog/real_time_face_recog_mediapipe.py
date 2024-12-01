@@ -44,9 +44,7 @@ def init_models():
     facenet.embeddings([dummy_image])
 
     # Initialize accessory model using get_model
-    accessory_model = get_model(
-        model_id="nydata2/1", api_key=os.getenv("ROBOFLOW_API_KEY")
-    )
+    accessory_model = get_model(model_id="nydata2/1", api_key=os.getenv("ROBOFLOW_API_KEY"))
 
     # Initialize annotators for visualization
     box_annotator = sv.BoxAnnotator()
@@ -207,7 +205,7 @@ class AccessoryBuffer:
         if not self.detections:
             return False
         # Return True if accessories detected in majority of recent frames
-        return sum(self.detections) / len(self.detections) == 1
+        return sum(self.detections) / len(self.detections) == 0.8
 
 
 def get_alignment_instruction(angle):
@@ -241,13 +239,8 @@ def process_accessories(frame):
     """Process frame for accessory detection using Supervision"""
     min_confidence = 0.6
     try:
-        # Get predictions using new inference method
         results = accessory_model.infer(frame)[0]
-
-        # Convert results to Supervision Detections
         detections = sv.Detections.from_inference(results)
-
-        # Define forbidden accessories
         forbidden_accessories = ["cap", "glasses", "hat", "sunglasses"]
 
         # Check if any forbidden accessories are detected
@@ -263,12 +256,8 @@ def process_accessories(frame):
         # Annotate frame with boxes and labels
         annotated_frame = frame.copy()
         if has_forbidden:
-            annotated_frame = box_annotator.annotate(
-                scene=annotated_frame, detections=detections
-            )
-            annotated_frame = label_annotator.annotate(
-                scene=annotated_frame, detections=detections
-            )
+            annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections)
+            annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections)
 
         return annotated_frame, labels, has_forbidden
     except Exception as e:
@@ -295,7 +284,7 @@ def process_frame(frame):
     face_img = frame_rgb[y : y + h, x : x + w]
     face_img = cv2.resize(face_img, (160, 160))
 
-    return detection, face_img, (x, y, w, h)  # Return bbox coordinates as well
+    return detection, face_img, (x, y, w, h)
 
 
 def main():
@@ -303,8 +292,8 @@ def main():
     for camera_info in enumerate_cameras():
         print(f"{camera_info.index}: {camera_info.name}")
     capture = cv2.VideoCapture(0)
-    capture.set(3, 1280)  # Width of the frames in the video stream.
-    capture.set(4, 720)  # Height of the frames in the video stream.
+    capture.set(3, 1280)  # Width
+    capture.set(4, 720)  # Height
 
     # Load dataset instead of individual images
     print("Loading face dataset...")
@@ -380,22 +369,18 @@ def main():
                     _, _, has_forbidden = process_accessories(frame)
                     if has_forbidden:
                         state.reset()
-                        result_msg = (
-                            "Accessories detected. Please remove them and try again"
-                        )
+                        result_msg = ("Accessories detected. Please remove them and try again")
                         continue
 
                     # Get face embedding using FaceNet - using face_img from process_frame
                     face_embedding = facenet.embeddings([face_img])[0]
 
                     # Calculate similarities with known faces
-                    face_distances = np.linalg.norm(
-                        known_face_encodings - face_embedding, axis=1
-                    )
+                    face_distances = np.linalg.norm(known_face_encodings - face_embedding, axis=1)
                     best_match_index = np.argmin(face_distances)
                     match_percentage = (1 - face_distances[best_match_index]) * 100
 
-                    if match_percentage >= 0:  # Adjusted threshold for FaceNet
+                    if match_percentage >= 0:  # Adjusted similarity threshold for FaceNet
                         name = known_face_names[best_match_index]
                         result_msg = f"Match found: {name}"
                     else:
@@ -459,45 +444,17 @@ def main():
             state.accessory_buffer.add(has_forbidden)
 
             # Update accessory message
-            if (
-                has_forbidden
-                and state.current_state in [STATE_ALIGNING, STATE_COUNTDOWN]
-                and state.accessory_buffer.is_consistently_detected()
-            ):
+            if (has_forbidden and state.current_state in [STATE_ALIGNING, STATE_COUNTDOWN] and state.accessory_buffer.is_consistently_detected()):
                 state.reset()
                 accessory_msg = "Please remove accessories"
 
         # Update UI elements
         if state.current_state != STATE_CAPTURED:
-            cv2.putText(
-                frame,
-                alignment_msg,
-                (10, 30),
-                cv2.FONT_HERSHEY_DUPLEX,
-                0.7,
-                (0, 255, 0),
-                2,
-            )
+            cv2.putText(frame, alignment_msg, (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
             if result_msg:
-                cv2.putText(
-                    frame,
-                    result_msg,
-                    (10, 70),
-                    cv2.FONT_HERSHEY_DUPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                )
+                cv2.putText(frame, result_msg, (10, 70), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
             if accessory_msg:
-                cv2.putText(
-                    frame,
-                    accessory_msg,
-                    (10, 110),
-                    cv2.FONT_HERSHEY_DUPLEX,
-                    0.7,
-                    (0, 255, 0),
-                    2,
-                )
+                cv2.putText(frame, accessory_msg, (10, 110), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
 
             cv2.imshow("Face Verification System", frame)
 
