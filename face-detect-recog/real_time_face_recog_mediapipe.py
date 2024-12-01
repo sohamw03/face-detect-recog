@@ -5,9 +5,11 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import supervision as sv
+import mediapipe as mp
 from cv2_enumerate_cameras import enumerate_cameras
 from dotenv import load_dotenv
 from inference import get_model
+
 load_dotenv()
 
 gpus = tf.config.experimental.list_physical_devices("GPU")
@@ -19,7 +21,6 @@ if gpus:
     except RuntimeError as e:
         print(f"GPU configuration error: {e}")
 
-from mtcnn import MTCNN
 from keras_facenet import FaceNet
 import pickle
 
@@ -28,20 +29,24 @@ STATE_ALIGNING = 0
 STATE_COUNTDOWN = 1
 STATE_CAPTURED = 2
 
+
 def init_models():
-    global detector, facenet, accessory_model, label_annotator, box_annotator
-    # Initialize models with GPU support
-    detector = MTCNN(
-        stages="face_and_landmarks_detection",
-        device="gpu:0",
+    global face_detector, facenet, accessory_model, label_annotator, box_annotator
+    # Initialize MediaPipe face detection
+    mp_face_detection = mp.solutions.face_detection
+    face_detector = mp_face_detection.FaceDetection(
+        model_selection=1, min_detection_confidence=0.5  # 1 for full range detection
     )
+
     facenet = FaceNet()
     # Warm up GPU with a dummy inference
     dummy_image = np.zeros((160, 160, 3), dtype=np.uint8)
     facenet.embeddings([dummy_image])
 
     # Initialize accessory model using get_model
-    accessory_model = get_model(model_id="nydata2/1", api_key=os.getenv("ROBOFLOW_API_KEY")) # Model ID: accesories/1 nydata2/1
+    accessory_model = get_model(
+        model_id="nydata2/1", api_key=os.getenv("ROBOFLOW_API_KEY")
+    )
 
     # Initialize annotators for visualization
     box_annotator = sv.BoxAnnotator()
@@ -51,21 +56,25 @@ def init_models():
 
 
 def process_face(args):
-    """Helper function to process a single face using FaceNet"""
+    """Helper function to process a single face using MediaPipe and FaceNet"""
     image_path, name = args
-    global detector, facenet
+    global face_detector, facenet
     try:
         image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Detect face using MTCNN
-        faces = detector.detect_faces(image)
-        if faces:
-            x, y, w, h = faces[0]["box"]
-            face = image[y : y + h, x : x + w]
+        # Detect face using MediaPipe
+        results = face_detector.process(image_rgb)
+        if results.detections:
+            detection = results.detections[0]
+            bbox = detection.location_data.relative_bounding_box
+            ih, iw, _ = image.shape
+            x, y = int(bbox.xmin * iw), int(bbox.ymin * ih)
+            w, h = int(bbox.width * iw), int(bbox.height * ih)
+
+            # Extract and process face
+            face = image_rgb[y : y + h, x : x + w]
             face = cv2.resize(face, (160, 160))
-
-            # Get face embedding
             face_embedding = facenet.embeddings([face])[0]
             return (face_embedding, name)
     except Exception as e:
@@ -76,7 +85,6 @@ def process_face(args):
 def load_dataset():
     """Load face dataset and compute FaceNet embeddings"""
     cache_file = "facenet_embeddings_cache.pkl"
-    global detector
 
     # Try to load from cache first
     if os.path.exists(cache_file):
@@ -141,31 +149,29 @@ def load_dataset():
     return known_face_encodings, known_face_names
 
 
-def get_face_angle(face):
-    """Calculate lateral face angle (yaw) using MTCNN landmarks
-    Returns angle in degrees where:
-    0 degrees = facing camera directly
-    Positive = face turned to their left (our right)
-    Negative = face turned to their right (our left)
-    """
-    landmarks = face["keypoints"]
-    nose = landmarks["nose"]
-    left_eye = landmarks["left_eye"]
-    right_eye = landmarks["right_eye"]
+def get_face_angle(detection, image_width, image_height):
+    """Calculate face angle using MediaPipe landmarks"""
+    # Get eye landmarks
+    right_eye = detection.location_data.relative_keypoints[0]
+    left_eye = detection.location_data.relative_keypoints[1]
+    nose = detection.location_data.relative_keypoints[2]
+
+    # Convert relative coordinates to absolute
+    right_eye_x = int(right_eye.x * image_width)
+    right_eye_y = int(right_eye.y * image_height)
+    left_eye_x = int(left_eye.x * image_width)
+    left_eye_y = int(left_eye.y * image_height)
+    nose_x = int(nose.x * image_width)
+    nose_y = int(nose.y * image_height)
 
     # Calculate eye midpoint
-    eye_midpoint = ((left_eye[0] + right_eye[0]) / 2, (left_eye[1] + right_eye[1]) / 2)
+    eye_midpoint = ((left_eye_x + right_eye_x) / 2, (left_eye_y + right_eye_y) / 2)
 
-    # Calculate distance between eyes
+    # Calculate angle
     eye_distance = np.sqrt(
-        (right_eye[0] - left_eye[0]) ** 2 + (right_eye[1] - left_eye[1]) ** 2
+        (right_eye_x - left_eye_x) ** 2 + (right_eye_y - left_eye_y) ** 2
     )
-
-    # Calculate horizontal distance from nose to eye midpoint
-    nose_offset = nose[0] - eye_midpoint[0]
-
-    # Convert to angle using arctangent
-    # Multiply by 2 to amplify the angle for better sensitivity
+    nose_offset = nose_x - eye_midpoint[0]
     angle = np.degrees(2 * np.arctan2(nose_offset, eye_distance))
 
     return angle
@@ -201,13 +207,14 @@ class AccessoryBuffer:
         if not self.detections:
             return False
         # Return True if accessories detected in majority of recent frames
-        return sum(self.detections) / len(self.detections) > 0.6
+        return sum(self.detections) / len(self.detections) == 1
 
 
 def get_alignment_instruction(angle):
-    if abs(angle) < 8:  # Wider threshold
+    threshold = 10
+    if abs(angle) < threshold:
         return "Face aligned properly", True
-    elif angle < -8:
+    elif angle < -threshold:
         return "Turn face right slowly", False
     else:
         return "Turn face left slowly", False
@@ -216,13 +223,13 @@ def get_alignment_instruction(angle):
 class FaceVerificationState:
     def __init__(self):
         self.current_state = STATE_ALIGNING
-        self.angle_buffer = AngleBuffer(10)
-        self.accessory_buffer = AccessoryBuffer(10)
+        self.angle_buffer = AngleBuffer(20)
+        self.accessory_buffer = AccessoryBuffer(60)
         self.stable_frames = 0
         self.state_start_time = 0
         self.captured_frame = None
         self.captured_result = ""
-        self.accessory_msg = ""  # New field for accessory messages
+        self.accessory_msg = ""
         self.captured_face_loc = None
         self.captured_box_color = None
 
@@ -232,6 +239,7 @@ class FaceVerificationState:
 
 def process_accessories(frame):
     """Process frame for accessory detection using Supervision"""
+    min_confidence = 0.6
     try:
         # Get predictions using new inference method
         results = accessory_model.infer(frame)[0]
@@ -240,18 +248,27 @@ def process_accessories(frame):
         detections = sv.Detections.from_inference(results)
 
         # Define forbidden accessories
-        forbidden_accessories = ['cap', 'glasses', 'hat', 'sunglasses']
+        forbidden_accessories = ["cap", "glasses", "hat", "sunglasses"]
 
         # Check if any forbidden accessories are detected
         labels = detections.data.get("class_name", [])
-        has_forbidden = any(acc in labels for acc in forbidden_accessories)
+        confidences = detections.confidence
+        label_dict = dict(zip(labels, confidences))
+        has_forbidden = any(
+            label in forbidden_accessories
+            and label_dict.get(label, 0) >= min_confidence
+            for label in labels
+        )
 
         # Annotate frame with boxes and labels
-        annotated_frame = box_annotator.annotate(scene=frame.copy(), detections=detections)
-        annotated_frame = label_annotator.annotate(
-            scene=annotated_frame,
-            detections=detections
-        )
+        annotated_frame = frame.copy()
+        if has_forbidden:
+            annotated_frame = box_annotator.annotate(
+                scene=annotated_frame, detections=detections
+            )
+            annotated_frame = label_annotator.annotate(
+                scene=annotated_frame, detections=detections
+            )
 
         return annotated_frame, labels, has_forbidden
     except Exception as e:
@@ -259,9 +276,30 @@ def process_accessories(frame):
         return frame, [], False
 
 
+def process_frame(frame):
+    """Process a frame using MediaPipe face detection"""
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_detector.process(frame_rgb)
+
+    if not results.detections:
+        return None, None, None
+
+    detection = results.detections[0]
+    bbox = detection.location_data.relative_bounding_box
+    ih, iw, _ = frame.shape
+    x = int(bbox.xmin * iw)
+    y = int(bbox.ymin * ih)
+    w = int(bbox.width * iw)
+    h = int(bbox.height * ih)
+
+    face_img = frame_rgb[y : y + h, x : x + w]
+    face_img = cv2.resize(face_img, (160, 160))
+
+    return detection, face_img, (x, y, w, h)  # Return bbox coordinates as well
+
+
 def main():
     init_models()
-    global detector
     for camera_info in enumerate_cameras():
         print(f"{camera_info.index}: {camera_info.name}")
     capture = cv2.VideoCapture(0)
@@ -321,31 +359,20 @@ def main():
                 state.reset()
             continue
 
-        # Process face detection using MTCNN
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        faces = detector.detect_faces(rgb_frame)
+        # Process frame with MediaPipe
+        detection, face_img, face_bbox = process_frame(frame)
 
         alignment_msg = "No face detected"
         result_msg = state.captured_result
-        accessory_msg = ""  # Initialize accessory message
+        accessory_msg = ""
         box_color = (0, 0, 255)
 
-        if faces:
-            face = faces[0]  # Get the first detected face
-            angle = get_face_angle(face)
+        if detection:
+            # Get face angle using MediaPipe landmarks
+            angle = get_face_angle(detection, frame.shape[1], frame.shape[0])
             state.angle_buffer.add(angle)
             smoothed_angle = state.angle_buffer.get_average()
             alignment_msg, is_aligned = get_alignment_instruction(smoothed_angle)
-
-            # Process accessories and update buffer
-            _, _, has_forbidden = process_accessories(frame)
-            state.accessory_buffer.add(has_forbidden)
-
-            # Check for consistent accessory detection
-            if state.accessory_buffer.is_consistently_detected():
-                state.reset()
-                accessory_msg = "Please remove accessories"
-                continue
 
             if state.current_state == STATE_CAPTURED:
                 if is_aligned:
@@ -353,13 +380,12 @@ def main():
                     _, _, has_forbidden = process_accessories(frame)
                     if has_forbidden:
                         state.reset()
-                        result_msg = "Accessories detected. Please remove them and try again"
+                        result_msg = (
+                            "Accessories detected. Please remove them and try again"
+                        )
                         continue
 
-                    # Get face embedding using FaceNet
-                    x, y, w, h = face["box"]
-                    face_img = rgb_frame[y : y + h, x : x + w]
-                    face_img = cv2.resize(face_img, (160, 160))
+                    # Get face embedding using FaceNet - using face_img from process_frame
                     face_embedding = facenet.embeddings([face_img])[0]
 
                     # Calculate similarities with known faces
@@ -375,12 +401,12 @@ def main():
                     else:
                         result_msg = f"No match found"
 
+                    x, y, w, h = face_bbox  # Use returned bbox coordinates
                     state.captured_frame = frame.copy()
                     state.captured_result = result_msg
                     state.captured_face_loc = (y, x + w, y + h, x)
                     state.captured_box_color = (255, 0, 0)
 
-            # Rest of the state handling logic remains the same
             if state.current_state == STATE_ALIGNING:
                 if is_aligned:
                     state.stable_frames += 1
@@ -418,28 +444,60 @@ def main():
                     else:
                         state.current_state = STATE_CAPTURED
 
-            # Draw face boxes using MTCNN coordinates
-            x, y, w, h = face["box"]
+            # Draw face box using MediaPipe detection
+            bbox = detection.location_data.relative_bounding_box
+            ih, iw, _ = frame.shape
+            x = int(bbox.xmin * iw)
+            y = int(bbox.ymin * ih)
+            w = int(bbox.width * iw)
+            h = int(bbox.height * ih)
             cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
 
         # Process accessories if not in CAPTURED state
         if state.current_state != STATE_CAPTURED:
             frame, accessories, has_forbidden = process_accessories(frame)
+            state.accessory_buffer.add(has_forbidden)
 
             # Update accessory message
-            if has_forbidden and state.current_state in [STATE_ALIGNING, STATE_COUNTDOWN]:
+            if (
+                has_forbidden
+                and state.current_state in [STATE_ALIGNING, STATE_COUNTDOWN]
+                and state.accessory_buffer.is_consistently_detected()
+            ):
                 state.reset()
-                accessory_msg = "Please remove accessories (cap/glasses/hat/sunglasses)"
-            elif len(accessories) > 0:
-                accessory_msg = f"Detected accessories: {', '.join(accessories)}"
+                accessory_msg = "Please remove accessories"
 
         # Update UI elements
         if state.current_state != STATE_CAPTURED:
-            cv2.putText( frame, alignment_msg, (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
+            cv2.putText(
+                frame,
+                alignment_msg,
+                (10, 30),
+                cv2.FONT_HERSHEY_DUPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
             if result_msg:
-                cv2.putText( frame, result_msg, (10, 70), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
-            if accessory_msg:  # Add accessory message at a different position
-                cv2.putText(frame, accessory_msg, (10, 110), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(
+                    frame,
+                    result_msg,
+                    (10, 70),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
+            if accessory_msg:
+                cv2.putText(
+                    frame,
+                    accessory_msg,
+                    (10, 110),
+                    cv2.FONT_HERSHEY_DUPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
 
             cv2.imshow("Face Verification System", frame)
 
