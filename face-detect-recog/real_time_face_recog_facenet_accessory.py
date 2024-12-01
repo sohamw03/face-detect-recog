@@ -241,7 +241,7 @@ def main():
     global detector
     for camera_info in enumerate_cameras():
         print(f"{camera_info.index}: {camera_info.name}")
-    capture = cv2.VideoCapture(705)
+    capture = cv2.VideoCapture(0)
     capture.set(3, 1280)  # Width of the frames in the video stream.
     capture.set(4, 720)  # Height of the frames in the video stream.
 
@@ -330,9 +330,9 @@ def main():
 
                     if match_percentage >= 0:  # Adjusted threshold for FaceNet
                         name = known_face_names[best_match_index]
-                        result_msg = f"Match found: {name} ({match_percentage:.2f}%)"
+                        result_msg = f"Match found: {name}"
                     else:
-                        result_msg = f"No match found ({match_percentage:.2f}%)"
+                        result_msg = f"No match found"
 
                     state.captured_frame = frame.copy()
                     state.captured_result = result_msg
