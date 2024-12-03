@@ -97,7 +97,6 @@ def load_dataset():
 
     # If cache doesn't exist or failed to load, process the dataset
     print("Processing face dataset...")
-    # Read CSV file
     df = pd.read_csv("archive/Dataset.csv")
 
     known_face_encodings = []
@@ -205,7 +204,7 @@ class AccessoryBuffer:
         if not self.detections:
             return False
         # Return True if accessories detected in majority of recent frames
-        return sum(self.detections) / len(self.detections) == 0.8
+        return sum(self.detections) / len(self.detections) > 0.6
 
 
 def get_alignment_instruction(angle):
@@ -222,7 +221,7 @@ class FaceVerificationState:
     def __init__(self):
         self.current_state = STATE_ALIGNING
         self.angle_buffer = AngleBuffer(20)
-        self.accessory_buffer = AccessoryBuffer(60)
+        self.accessory_buffer = AccessoryBuffer(80)
         self.stable_frames = 0
         self.state_start_time = 0
         self.captured_frame = None
@@ -236,8 +235,8 @@ class FaceVerificationState:
 
 
 def process_accessories(frame):
-    """Process frame for accessory detection using Supervision"""
-    min_confidence = 0.6
+    """Process frame for accessory detection using inference, roboflow, supervision"""
+    min_confidence = 0.5
     try:
         results = accessory_model.infer(frame)[0]
         detections = sv.Detections.from_inference(results)
@@ -253,13 +252,12 @@ def process_accessories(frame):
             for label in labels
         )
 
-        # Annotate frame with boxes and labels
-        annotated_frame = frame.copy()
-        if has_forbidden:
-            annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections)
-            annotated_frame = label_annotator.annotate(scene=annotated_frame, detections=detections)
+        # Always draw boxes and labels if there are detections
+        if len(detections) > 0:
+            frame = box_annotator.annotate(scene=frame, detections=detections)
+            frame = label_annotator.annotate(scene=frame, detections=detections)
 
-        return annotated_frame, labels, has_forbidden
+        return frame, labels, has_forbidden
     except Exception as e:
         print(f"Accessory detection error: {e}")
         return frame, [], False
@@ -282,9 +280,63 @@ def process_frame(frame):
     h = int(bbox.height * ih)
 
     face_img = frame_rgb[y : y + h, x : x + w]
+    if len(face_img) == 0:
+        return None, None, None
     face_img = cv2.resize(face_img, (160, 160))
 
     return detection, face_img, (x, y, w, h)
+
+
+def draw_text(frame, text, pos, font_scale=0.6, color=(255, 255, 255)):
+    """Helper function to draw anti-aliased text"""
+    cv2.putText(frame, text, pos,
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 1, cv2.LINE_AA)
+
+def draw_status_bar(frame, state, message):
+    height, width = frame.shape[:2]
+    # Draw semi-transparent black bar at bottom
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, height-40), (width, height), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+    # Add status text
+    status_text = f"Status: {message} | Press 'R' to reset | 'Q' to quit"
+    draw_text(frame, status_text, (10, height-15))
+
+def draw_progress_bar(frame, progress, y_pos):
+    width = frame.shape[1]
+    bar_width = 200
+    bar_height = 20
+    start_x = (width - bar_width) // 2
+
+    # Draw background with smooth edges
+    cv2.rectangle(frame, (start_x, y_pos), (start_x + bar_width, y_pos + bar_height),
+                 (100, 100, 100), -1, cv2.LINE_AA)
+    # Draw progress with smooth edges
+    filled_width = int((progress/100) * bar_width)
+    cv2.rectangle(frame, (start_x, y_pos), (start_x + filled_width, y_pos + bar_height),
+                 (0, 255, 0), -1, cv2.LINE_AA)
+
+    # Add percentage text
+    draw_text(frame, f"{int(progress)}%",
+              (start_x + bar_width + 10, y_pos + 15), 0.5)
+
+def draw_info_panel(frame, state_info):
+    height, width = frame.shape[:2]
+    panel_width = 250
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (width-panel_width, 0), (width, height), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+
+    y = 30
+    for label, value in state_info.items():
+        text_color = (255, 255, 255)
+        if label == "Accessories":
+            text_color = (0, 0, 255) if value == "Detected" else (0, 255, 0)
+
+        text = f"{label}: {value}"
+        draw_text(frame, text, (width-panel_width+10, y), 0.5, text_color)
+        y += 25
 
 
 def main():
@@ -324,22 +376,16 @@ def main():
 
         # Show frozen frame if in CAPTURED state
         if state.current_state == STATE_CAPTURED and state.captured_frame is not None:
-            frame = state.captured_frame.copy()
-            cv2.putText(
-                frame,
-                state.captured_result,
-                (10, 70),
-                cv2.FONT_HERSHEY_DUPLEX,
-                0.7,
-                (0, 255, 0),
-                2,
-            )
+            frame_captured = state.captured_frame.copy()
+            draw_text(frame_captured, state.captured_result, (10, 70), 0.8, (255, 255, 0))  # Yellow color
+            cv2.putText(frame_captured, state.captured_result, (10, 70),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)  # Thicker text
             if state.captured_face_loc:
                 top, right, bottom, left = state.captured_face_loc
                 cv2.rectangle(
-                    frame, (left, top), (right, bottom), state.captured_box_color, 2
+                    frame_captured, (left, top), (right, bottom), state.captured_box_color, 2
                 )
-            cv2.imshow("Face Verification System", frame)
+            cv2.imshow("Face Verification System", frame_captured)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -350,6 +396,8 @@ def main():
 
         # Process frame with MediaPipe
         detection, face_img, face_bbox = process_frame(frame)
+        if all(v is None for v in [detection, face_img, face_bbox]):
+            continue
 
         alignment_msg = "No face detected"
         result_msg = state.captured_result
@@ -438,26 +486,41 @@ def main():
             h = int(bbox.height * ih)
             cv2.rectangle(frame, (x, y), (x + w, y + h), box_color, 2)
 
-        # Process accessories if not in CAPTURED state
-        if state.current_state != STATE_CAPTURED:
-            frame, accessories, has_forbidden = process_accessories(frame)
+            # Draw colored border based on state
+            border_color = (0, 0, 255)  # Red by default
+            if state.current_state == STATE_COUNTDOWN:
+                border_color = (0, 255, 255)  # Yellow
+            elif state.current_state == STATE_CAPTURED:
+                border_color = (0, 255, 0)  # Green
+
+            # Draw border
+            cv2.rectangle(frame, (0, 0), (frame.shape[1]-1, frame.shape[0]-1), border_color, 3)
+
+            # Process accessories and update status
+            _, _, has_forbidden = process_accessories(frame) if not state.current_state == STATE_CAPTURED else (frame, [], False)
             state.accessory_buffer.add(has_forbidden)
 
-            # Update accessory message
-            if (has_forbidden and state.current_state in [STATE_ALIGNING, STATE_COUNTDOWN] and state.accessory_buffer.is_consistently_detected()):
+            # Reset state if accessories detected during alignment or countdown
+            if (state.accessory_buffer.is_consistently_detected() and state.current_state in [STATE_ALIGNING, STATE_COUNTDOWN]):
                 state.reset()
-                accessory_msg = "Please remove accessories"
+                alignment_msg = "Please remove accessories"
 
-        # Update UI elements
-        if state.current_state != STATE_CAPTURED:
-            cv2.putText(frame, alignment_msg, (10, 30), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
-            if result_msg:
-                cv2.putText(frame, result_msg, (10, 70), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
-            if accessory_msg:
-                cv2.putText(frame, accessory_msg, (10, 110), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2,)
+            # Draw info panel with synchronized accessory status
+            state_info = {
+                "State": ["Aligning", "Countdown", "Captured"][state.current_state],
+                "Face Angle": f"{int(smoothed_angle)}",
+                "Alignment": "Good" if is_aligned else "Adjusting",
+                "Accessories": "Detected" if state.accessory_buffer.is_consistently_detected() else "None"
+            }
+            draw_info_panel(frame, state_info)
 
-            cv2.imshow("Face Verification System", frame)
+            # Draw status bar
+            draw_status_bar(frame, state.current_state, alignment_msg)
 
+        # Show the frame
+        cv2.imshow("Face Verification System", frame)
+
+        # Reset state if accessories detected during alignment
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             break

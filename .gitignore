@@ -2,3 +2,5 @@
 face-detect-recog/archive/
 .env
 .vscode
+__pycache__/
+*.pyc
