@@ -1,11 +1,11 @@
-import face_recognition
-import cv2
-from multiprocessing import Process, Manager, cpu_count, set_start_method
-import time
-import numpy
-import threading
 import platform
+import threading
+import time
+from multiprocessing import Manager, Process, cpu_count, set_start_method
 
+import cv2
+import face_recognition
+import numpy
 
 # This is a little bit complicated (but fast) example of running face recognition on live video from your webcam.
 # This example is using multiprocess.
@@ -38,7 +38,10 @@ def capture(read_frame_list, Global, worker_num):
     # video_capture.set(3, 640)  # Width of the frames in the video stream.
     # video_capture.set(4, 480)  # Height of the frames in the video stream.
     # video_capture.set(5, 30) # Frame rate.
-    print("Width: %d, Height: %d, FPS: %d" % (video_capture.get(3), video_capture.get(4), video_capture.get(5)))
+    print(
+        "Width: %d, Height: %d, FPS: %d"
+        % (video_capture.get(3), video_capture.get(4), video_capture.get(5))
+    )
 
     while not Global.is_exit:
         # If it's time to read a frame
@@ -61,7 +64,9 @@ def process(worker_id, read_frame_list, write_frame_list, Global, worker_num):
     while not Global.is_exit:
 
         # Wait to read
-        while Global.read_num != worker_id or Global.read_num != prev_id(Global.buff_num, worker_num):
+        while Global.read_num != worker_id or Global.read_num != prev_id(
+            Global.buff_num, worker_num
+        ):
             # If the user has requested to end the app, then stop waiting for webcam frames
             if Global.is_exit:
                 break
@@ -78,16 +83,20 @@ def process(worker_id, read_frame_list, write_frame_list, Global, worker_num):
         Global.read_num = next_id(Global.read_num, worker_num)
 
         # Convert the image from BGR color (which OpenCV uses) to RGB color (which face_recognition uses)
-        rgb_frame = frame_process# [:, :, ::-1]
+        rgb_frame = cv2.cvtColor(frame_process, cv2.COLOR_BGR2RGB)
 
         # Find all the faces and face encodings in the frame of video, cost most time
         face_locations = face_recognition.face_locations(rgb_frame)
         face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
         # Loop through each face in this frame of video
-        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+        for (top, right, bottom, left), face_encoding in zip(
+            face_locations, face_encodings
+        ):
             # See if the face is a match for the known face(s)
-            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+            matches = face_recognition.compare_faces(
+                known_face_encodings, face_encoding
+            )
 
             name = "Unknown"
 
@@ -100,9 +109,23 @@ def process(worker_id, read_frame_list, write_frame_list, Global, worker_num):
             cv2.rectangle(frame_process, (left, top), (right, bottom), (0, 0, 255), 2)
 
             # Draw a label with a name below the face
-            cv2.rectangle(frame_process, (left, bottom - 35), (right, bottom), (0, 0, 255), cv2.FILLED)
+            cv2.rectangle(
+                frame_process,
+                (left, bottom - 35),
+                (right, bottom),
+                (0, 0, 255),
+                cv2.FILLED,
+            )
             font = cv2.FONT_HERSHEY_DUPLEX
-            cv2.putText(frame_process, name, (left + 6, bottom - 6), font, 1.0, (255, 255, 255), 1)
+            cv2.putText(
+                frame_process,
+                name,
+                (left + 6, bottom - 6),
+                font,
+                1.0,
+                (255, 255, 255),
+                1,
+            )
 
         # Wait to write
         while Global.write_num != worker_id:
@@ -115,11 +138,11 @@ def process(worker_id, read_frame_list, write_frame_list, Global, worker_num):
         Global.write_num = next_id(Global.write_num, worker_num)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     # Fix Bug on MacOS
-    if platform.system() == 'Darwin':
-        set_start_method('forkserver')
+    if platform.system() == "Darwin":
+        set_start_method("forkserver")
 
     # Global variables
     Global = Manager().Namespace()
@@ -141,26 +164,59 @@ if __name__ == '__main__':
     p = []
 
     # Create a thread to capture frames (if uses subprocess, it will crash on Mac)
-    p.append(threading.Thread(target=capture, args=(read_frame_list, Global, worker_num,)))
+    p.append(
+        threading.Thread(
+            target=capture,
+            args=(
+                read_frame_list,
+                Global,
+                worker_num,
+            ),
+        )
+    )
     p[0].start()
 
-    # load the sample image and get the 128 face embeddings that is vecotrs from them
-    soham_image= face_recognition.load_image_file('soham.jpg')
-    modi_image= face_recognition.load_image_file('modi2.jpg')
-    trump_image= face_recognition.load_image_file('trump.jpg')
+    # load and convert the sample images
+    try:
+        soham_image = cv2.cvtColor(cv2.imread("soham.jpg"), cv2.COLOR_BGR2RGB)
+        modi_image = cv2.cvtColor(cv2.imread("modi2.jpg"), cv2.COLOR_BGR2RGB)
+        trump_image = cv2.cvtColor(cv2.imread("trump.jpg"), cv2.COLOR_BGR2RGB)
 
-    # here we are assuming that the image is having only a single face
-    face_encodings_soham = face_recognition.face_encodings(soham_image)[0]
-    face_encodings_modi = face_recognition.face_encodings(modi_image)[0]
-    face_encodings_trump = face_recognition.face_encodings(trump_image)[0]
+        if soham_image is None or modi_image is None or trump_image is None:
+            raise ValueError("One or more images failed to load")
 
-    # Create arrays of known face encodings and their names
-    Global.known_face_encodings = [ face_encodings_soham, face_encodings_modi, face_encodings_trump ]
-    Global.known_face_names = [ "Soham", "Narendra Modi", "Donald Trump" ]
+        # Get face encodings
+        face_encodings_soham = face_recognition.face_encodings(soham_image)[0]
+        face_encodings_modi = face_recognition.face_encodings(modi_image)[0]
+        face_encodings_trump = face_recognition.face_encodings(trump_image)[0]
+
+        # Create arrays of known face encodings and their names
+        Global.known_face_encodings = [
+            face_encodings_soham,
+            face_encodings_modi,
+            face_encodings_trump,
+        ]
+        Global.known_face_names = ["Soham", "Narendra Modi", "Donald Trump"]
+
+    except Exception as e:
+        print(f"Error loading reference images: {str(e)}")
+        Global.is_exit = True
+        exit(1)
 
     # Create workers
     for worker_id in range(1, worker_num + 1):
-        p.append(Process(target=process, args=(worker_id, read_frame_list, write_frame_list, Global, worker_num,)))
+        p.append(
+            Process(
+                target=process,
+                args=(
+                    worker_id,
+                    read_frame_list,
+                    write_frame_list,
+                    Global,
+                    worker_num,
+                ),
+            )
+        )
         p[worker_id].start()
 
     # Start to show video
@@ -195,10 +251,10 @@ if __name__ == '__main__':
                 Global.frame_delay = 0
 
             # Display the resulting image
-            cv2.imshow('Video', write_frame_list[prev_id(Global.write_num, worker_num)])
+            cv2.imshow("Video", write_frame_list[prev_id(Global.write_num, worker_num)])
 
         # Hit 'q' on the keyboard to quit!
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             Global.is_exit = True
             break
 
